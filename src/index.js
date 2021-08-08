@@ -1,45 +1,100 @@
-const path = require('path');
-const http = require('http');
-const express = require('express');
-const socketio = require('socket.io');
-const Filter = require('bad-words');
+const path = require("path");
+const http = require("http");
+const express = require("express");
+const socketio = require("socket.io");
+const Filter = require("bad-words");
+const { generateMessage } = require("./utils/messages");
+const {
+  addUser,
+  removeUser,
+  getUser,
+  getUsersInRoom,
+} = require("./utils/users");
 
 const app = express();
 const server = http.createServer(app);
 const io = socketio(server);
 
 const port = process.env.PORT || 3000;
-const publicDirectoryPath = path.join(__dirname, '../public');
+const publicDirectoryPath = path.join(__dirname, "../public");
 
-app.use(express.static(publicDirectoryPath))
+app.use(express.static(publicDirectoryPath));
 
-io.on('connection', (socket) => {
-    console.log('New web socket connection');
+io.on("connection", (socket) => {
+  console.log("New web socket connection");
 
-    socket.emit("message", "Welcome...!"); //use this emit for only connected user/window
-    socket.broadcast.emit('message', 'A new user has joined!'); //use this broadcast emit for all users/windows excepted connected one request coming from
+  socket.broadcast.emit(
+    "message",
+    generateMessage("Admin", "A new user has joined!")
+  ); //use this broadcast emit for all users/windows excepted connected one request coming from
+  socket.on("join", (options, callback) => {
+    const { error, user } = addUser({ id: socket.id, ...options });
 
-    socket.on('sendMessage', (message, callback)=>{
-        const filter = new Filter();
+    if (error) {
+      return callback(error);
+    }
 
-        if(filter.isProfane(message)){
-            return callback('Profainity is not allowed');
-        }
+    socket.join(user.room);
 
-        io.emit('message', message); // send it to all the users/windows
-        callback();
-    })
+    socket.emit("message", generateMessage("Admin", "Welcome!")); //use this emit for only connected user/window
+    socket.broadcast
+      .to(user.room)
+      .emit(
+        "message",
+        generateMessage("Admin", `${user.username} has joined!`)
+      );
+    io.to(user.room).emit("roomData", {
+      room: user.room,
+      users: getUsersInRoom(user.room),
+    });
 
-    socket.on('sendLocation', (location, callback)=>{
-        socket.broadcast.emit("locationMessage", `https://google.com/maps?q=${location.lat},${location.long}`);
-        callback();
-    })
+    // socket.emit, io.emit, socket.broadcast.emit
+    // io.to.emit --> to particular room, socket.broadcast.to.emit//only to the room
 
-    socket.on('disconnect', ()=>{
-        io.emit('message', "A user disconnected");
-    })
-})
+    callback();
+  });
 
-server.listen(port, ()=>{
-    console.log(`Server is upon port ${port}!`)
-})
+  socket.on("sendMessage", (message, callback) => {
+    const user = getUser(socket.id);
+    const filter = new Filter();
+
+    if (filter.isProfane(message)) {
+      return callback("Profainity is not allowed");
+    }
+
+    // io.emit('message', generateMessage(message)); // send it to all the users/windows
+    io.to(user.room).emit("message", generateMessage(user.username, message));
+    callback();
+  });
+
+  socket.on("sendLocation", (location, callback) => {
+    const user = getUser(socket.id);
+    io.to(user.room).emit(
+      "locationMessage",
+      generateLocationMessage(
+        user.username,
+        `https://google.com/maps?q=${location.lat},${location.long}`
+      )
+    );
+    callback();
+  });
+
+  socket.on("disconnect", () => {
+    const user = removeUser(socket.id);
+
+    if (user) {
+      io.to(user.room).emit(
+        "message",
+        generateMessage("Admin", `${user.username} has left!`)
+      );
+      io.to(user.room).emit("roomData", {
+        room: user.room,
+        users: getUsersInRoom(user.room)
+      });
+    }
+  });
+});
+
+server.listen(port, () => {
+  console.log(`Server is upon port ${port}!`);
+});
